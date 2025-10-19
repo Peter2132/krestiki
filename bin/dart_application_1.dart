@@ -1,6 +1,41 @@
 import 'dart:io';
 import 'dart:math';
 
+class GameStats {
+  int playerHits = 0;
+  int playerMisses = 0;
+  int computerHits = 0;
+  int computerMisses = 0;
+  int playerShipsRemaining = 0;
+  int computerShipsRemaining = 0;
+  int totalShots = 0;
+  int totalTurns = 0;
+  String winner = '';
+  DateTime? gameStartTime;
+  DateTime? gameEndTime;
+  
+  void startGame() {
+    gameStartTime = DateTime.now();
+  }
+  
+  void endGame(String winnerName) {
+    winner = winnerName;
+    gameEndTime = DateTime.now();
+  }
+  
+  Duration get gameDuration => gameEndTime != null && gameStartTime != null 
+      ? gameEndTime!.difference(gameStartTime!) 
+      : Duration.zero;
+  
+  double get playerAccuracy => (playerHits + playerMisses) > 0 
+      ? playerHits / (playerHits + playerMisses) * 100 
+      : 0;
+  
+  double get computerAccuracy => (computerHits + computerMisses) > 0 
+      ? computerHits / (computerHits + computerMisses) * 100 
+      : 0;
+}
+
 class GameObject {
   String get symbol => '?';
   void showInfo() => print(symbol);
@@ -82,6 +117,30 @@ class Board extends GameObject {
 
   bool get hasShips => grid.any((row) => row.contains('S'));
   String getShipId(int row, int col) => shipIds[row][col];
+  
+  int get shipsRemaining {
+    Set<String> remainingShips = {};
+    for (int i = 0; i < size; i++) {
+      for (int j = 0; j < size; j++) {
+        if (grid[i][j] == 'S') {
+          remainingShips.add(shipIds[i][j]);
+        }
+      }
+    }
+    return remainingShips.length;
+  }
+  
+  int get totalShips {
+    Set<String> allShips = {};
+    for (int i = 0; i < size; i++) {
+      for (int j = 0; j < size; j++) {
+        if (shipIds[i][j].isNotEmpty) {
+          allShips.add(shipIds[i][j]);
+        }
+      }
+    }
+    return allShips.length;
+  }
 }
 
 class Player extends GameObject {
@@ -114,14 +173,16 @@ class HumanPlayer extends Player {
       if (result == 'hit') {
         print('Попадание!'); 
         score++;
-        game.hits++;
+        game.stats.playerHits++;
         if (game._isShipSunk(target, row, col)) {
           print('Корабль потоплен!');
           game._markSunkArea(target, target, row, col);
         }
         break;
       } else if (result == 'miss') {
-        print('Промах!'); break;
+        print('Промах!');
+        game.stats.playerMisses++;
+        break;
       }
     }
   }
@@ -162,12 +223,14 @@ class ComputerPlayer extends Player {
     if (result == 'hit') {
       print('Попадание!'); 
       score++;
+      game.stats.computerHits++;
       if (game._isShipSunk(target, row, col)) {
         print('Корабль потоплен!');
         game._markSunkArea(target, target, row, col);
       }
     } else {
       print('Промах!');
+      game.stats.computerMisses++;
     }
   }
 }
@@ -175,8 +238,9 @@ class ComputerPlayer extends Player {
 class BattleshipGame {
   Board playerBoard = Board(8), computerBoard = Board(8), targetBoard = Board(8);
   Player human, computer;
-  int totalShots = 0, hits = 0;
+  int totalShots = 0;
   int shipCounter = 0;
+  GameStats stats = GameStats();
 
   BattleshipGame(bool vsComputer)
       : human = HumanPlayer('Игрок'),
@@ -261,10 +325,57 @@ class BattleshipGame {
     }
   }
 
-  void play() {
+  Future<void> _saveStatsToFile() async {
+    try {
+      Directory statsDir = Directory('game_stats');
+      if (!await statsDir.exists()) {
+        await statsDir.create(recursive: true);
+        print('Создан каталог: ${statsDir.path}');
+      }
+
+      String fileName = 'battleship_stats_${DateTime.now().millisecondsSinceEpoch}.txt';
+      File statsFile = File('${statsDir.path}/$fileName');
+
+      String statsContent = '''
+Дата игры: ${DateTime.now()}
+Длительность игры: ${stats.gameDuration.inMinutes} мин. ${stats.gameDuration.inSeconds % 60} сек.
+Победитель: ${stats.winner}
+
+СТАТИСТИКА ИГРОКА:
+Попадания: ${stats.playerHits}
+Промахи: ${stats.playerMisses}
+Всего выстрелов: ${stats.playerHits + stats.playerMisses}
+Точность: ${stats.playerAccuracy.toStringAsFixed(1)}%
+Оставшиеся корабли: ${stats.playerShipsRemaining}/${playerBoard.totalShips}
+Счет: ${human.score}
+
+СТАТИСТИКА КОМПЬЮТЕРА:
+Попадания: ${stats.computerHits}
+Промахи: ${stats.computerMisses}
+Всего выстрелов: ${stats.computerHits + stats.computerMisses}
+Точность: ${stats.computerAccuracy.toStringAsFixed(1)}%
+Оставшиеся корабли: ${stats.computerShipsRemaining}/${computerBoard.totalShips}
+Счет: ${computer.score}
+
+ОБЩАЯ СТАТИСТИКА:
+Всего ходов: ${stats.totalTurns}
+Всего выстрелов: ${stats.playerHits + stats.playerMisses + stats.computerHits + stats.computerMisses}
+Общее время игры: ${stats.gameDuration.inMinutes} мин. ${stats.gameDuration.inSeconds % 60} сек.
+''';
+      await statsFile.writeAsString(statsContent);
+      print('Статистика сохранена в файл: ${statsFile.path}');
+      
+    } catch (e) {
+      print('Ошибка при сохранении статистики: $e');
+    }
+  }
+
+  void play() async {
     print('МОРСКОЙ БОЙ');
     human.showInfo();
     computer.showInfo();
+    
+    stats.startGame();
     
     shipCounter = 0;
     print('Расстановка: 1-авто, 2-ручно');
@@ -278,24 +389,36 @@ class BattleshipGame {
     while (true) {
       print('\n--- Ход ${current.name} ---');
       totalShots++;
+      stats.totalTurns++;
+
+      stats.playerShipsRemaining = playerBoard.shipsRemaining;
+      stats.computerShipsRemaining = computerBoard.shipsRemaining;
       
       if (current == human) {
         human.makeMove(computerBoard, playerBoard, this);
         if (!computerBoard.hasShips) {
-          print('\n${human.name} ПОБЕДИЛ!'); break;
+          print('\n${human.name} ПОБЕДИЛ!');
+          stats.endGame(human.name);
+          break;
         }
         current = computer;
       } else {
         computer.makeMove(playerBoard, computerBoard, this);
         if (!playerBoard.hasShips) {
-          print('\n${computer.name} ПОБЕДИЛ!'); break;
+          print('\n${computer.name} ПОБЕДИЛ!');
+          stats.endGame(computer.name);
+          break;
         }
         current = human;
       }
       
-      double accuracy = totalShots > 0 ? (hits / totalShots * 100) : 0;
-      print('Счет: ${human.score}:${computer.score} | Точность: ${accuracy.toStringAsFixed(1)}%');
+      double playerAccuracy = (stats.playerHits + stats.playerMisses) > 0 
+          ? stats.playerHits / (stats.playerHits + stats.playerMisses) * 100 
+          : 0;
+      print('Счет: ${human.score}:${computer.score} | Точность игрока: ${playerAccuracy.toStringAsFixed(1)}%');
     }
+    
+    await _saveStatsToFile();
   }
 }
 
